@@ -1,0 +1,10 @@
+{
+  "id": "chrome-pdf-export",
+  "name": "Chrome PDF Export",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "기본 'PDF로 내보내기'를 PC의 크롬/엣지 출력으로 바꿔, 섹션이 페이지 중간에서 잘리지 않게 함",
+  "author": "innomvation",
+  "authorUrl": "https://github.com/innomvation",
+  "isDesktopOnly": true
+}

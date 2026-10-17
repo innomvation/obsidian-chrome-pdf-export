@@ -1,0 +1,33 @@
+/* PDF 내보내기 시 내용이 페이지 경계에서 잘리는 것 방지 */
+@media print {
+  /* 섹션(## 제목부터 다음 제목 전까지)을 한 덩어리로:
+     제목(#, ##) 앞에서만 페이지를 넘기고, 섹션 안에서는 최대한 안 넘김 */
+  .print .markdown-rendered > div {
+    break-before: avoid; page-break-before: avoid;
+    break-inside: avoid; page-break-inside: avoid;
+  }
+  .print .markdown-rendered > div:has(> h1, > h2) { break-before: auto; page-break-before: auto; }
+
+  /* 섹션이 한 페이지보다 길 때는 소제목(###, ####) 앞에서 넘김 */
+  .print .markdown-rendered > div:has(> h3, > h4) { break-before: auto; page-break-before: auto; }
+
+  /* 제목이 페이지 끝에 혼자 남지 않게 */
+  h1, h2, h3, h4, h5, h6 { break-after: avoid; page-break-after: avoid; }
+
+  /* 작은 덩어리는 중간에서 자르지 않음 (하위 목록이 있는 큰 항목은 제외) */
+  table, pre, blockquote, figure, img, .callout,
+  mjx-container[display="true"], .math-block, .mermaid, svg, tr,
+  li:not(:has(ul, ol)) {
+    break-inside: avoid; page-break-inside: avoid;
+  }
+
+  /* 콜아웃이 페이지 경계에 걸리면 제목만 남기고 빈 상자가 되지 않게, 안의 표는 행 단위로 넘김 */
+  .callout table { break-inside: auto; page-break-inside: auto; }
+
+  /* 문단 1~2줄만 다음 장으로 넘어가는 것 방지 */
+  p { orphans: 3; widows: 3; }
+
+  /* md 안의 강제 페이지 넘김 div 때문에 빈 페이지가 생기는 것 방지 */
+  .print .markdown-rendered > div:has(> div[style*="page-break-after"]) { display: none; }
+  .print .markdown-rendered > div:has(+ div > div[style*="page-break-after"]) { break-after: page; page-break-after: page; }
+}
