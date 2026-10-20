@@ -22,7 +22,7 @@ const MARGIN_MM = 15;
 
 // 크롬 안에서 실행: 블록 높이를 재서 페이지 나눌 위치를 직접 정한다.
 // 1) 섹션(#, ## 제목 ~ 다음 제목)이 남은 공간에 안 들어가면 섹션째 새 페이지로
-// 2) 섹션이 한 페이지보다 길면 소제목(###, ####)·콜아웃 경계에서, 그것도 길면 블록 경계에서 나눔
+// 2) 섹션이 한 페이지보다 길면 ### → #### → #####·콜아웃 경계 순으로 잘게 나누고, 그것도 길면 블록 경계에서 나눔
 // 3) 블록 하나가 한 페이지보다 길 때만 블록 안에서 나뉨
 function paginate(PAGE_H) {
   const H = PAGE_H - 10; // 측정 오차 여유 (px)
@@ -35,7 +35,7 @@ function paginate(PAGE_H) {
       force = true;
       continue;
     }
-    const h = el.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > h4');
+    const h = el.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6');
     blocks.push({ el, force, lvl: h ? +h.tagName[1] : 0, callout: !!el.querySelector(':scope > .callout') });
     force = false;
   }
@@ -87,34 +87,46 @@ function paginate(PAGE_H) {
   // 덩어리를 놓는다: 남은 공간에 안 들어가면 새 페이지
   const place = (chunk, fit) => { if (used + fit > H) newPage(chunk[0]); };
 
+  // 덩어리가 한 페이지에 들어가면 통째로 놓고, 아니면 다음 단계 소제목에서 나눠 다시 시도한다
+  const LEVELS = [(b) => b.lvl === 3, (b) => b.lvl === 4, (b) => b.lvl >= 5 || b.callout];
+  const layout = (chunk, d) => {
+    const ch = sum(chunk);
+    if (ch <= H) { place(chunk, ch); used += adv(chunk); return; }
+    if (d < LEVELS.length) {
+      // 제목만 있는 덩어리(#### 바로 아래 ##### 등)는 다음 덩어리에 붙인다
+      const parts = split(chunk, LEVELS[d]).reduce((out, c) => {
+        const last = out[out.length - 1];
+        if (last && last.every((b) => b.lvl)) last.push(...c); else out.push(c);
+        return out;
+      }, []);
+      parts.forEach((c) => layout(c, d + 1));
+      return;
+    }
+    // 제목 블록은 바로 다음 블록과 한 덩어리로 다룬다
+    const units = split(chunk, (b) => !(b.prev && b.prev.lvl && chunk.includes(b.prev)));
+    units.forEach((u) => {
+      const uh = sum(u);
+      if (uh <= H) { place(u, uh); used += adv(u); return; }
+      // 한 페이지보다 긴 덩어리: 남은 공간이 절반 넘게 찼으면 새 페이지에서 시작하고 안에서 나뉘도록 허용
+      if (used > H * 0.5) newPage(u[0]);
+      for (const b of u) {
+        b.el.style.setProperty('break-inside', 'auto', 'important');
+        b.el.querySelectorAll('.callout, table, blockquote, pre').forEach((e) => e.style.setProperty('break-inside', 'auto', 'important'));
+      }
+      used = (used + adv(u)) % H + 40;
+    });
+  };
+
   const sections = split(vis, (b) => b.lvl === 1 || b.lvl === 2);
   sections.forEach((sec, si) => {
     if (sec[0].force) newPage(sec[0]);
     const total = sum(sec);
-    const subs = split(sec, (b) => b.lvl === 3 || b.lvl === 4 || b.callout);
     // 내용 없이 제목만 있는 섹션(# 2주차 + 한 줄)은 다음 섹션 첫 부분과 같이 놓는다
     const next = sections[si + 1];
     const tail = sec.length <= 2 && next && !next[0].force
       ? adv(sec) - total + sum(split(next, (b) => b.lvl >= 3 || b.callout)[0]) : 0;
     if (total <= H) { place(sec, Math.min(total + tail, H)); used += adv(sec); return; }
-
-    subs.forEach((sub) => {
-      const sh = sum(sub);
-      if (sh <= H) { place(sub, sh); used += adv(sub); return; }
-      // 제목 블록은 바로 다음 블록과 한 덩어리로 다룬다
-      const units = split(sub, (b) => !(b.prev && b.prev.lvl && sub.includes(b.prev)));
-      units.forEach((u) => {
-        const uh = sum(u);
-        if (uh <= H) { place(u, uh); used += adv(u); return; }
-        // 한 페이지보다 긴 덩어리: 남은 공간이 절반 넘게 찼으면 새 페이지에서 시작하고 안에서 나뉘도록 허용
-        if (used > H * 0.5) newPage(u[0]);
-        for (const b of u) {
-          b.el.style.setProperty('break-inside', 'auto', 'important');
-          b.el.querySelectorAll('.callout, table, blockquote, pre').forEach((e) => e.style.setProperty('break-inside', 'auto', 'important'));
-        }
-        used = (used + adv(u)) % H + 40;
-      });
-    });
+    layout(sec, 0);
   });
 }
 
