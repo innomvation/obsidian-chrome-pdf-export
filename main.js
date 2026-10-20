@@ -153,6 +153,7 @@ module.exports = class ChromePdfExport extends Plugin {
     if (res.canceled || !res.filePath) return;
 
     const notice = new Notice('PDF 만드는 중...', 0);
+    const tmp = path.join(os.tmpdir(), `obsidian-chrome-pdf-${Date.now()}.html`);
     const host = document.body.createDiv();
     host.style.cssText = 'position:fixed;left:-10000px;top:0;width:800px;';
     const comp = new Component();
@@ -188,16 +189,19 @@ module.exports = class ChromePdfExport extends Plugin {
 html, body { background: white !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; height: auto !important; }
 .print { width: ${w - 2 * MARGIN_MM}mm; }</style></head>
 <body class="${bodyCls}"><div class="print">${view.outerHTML}</div>
-<script>(${paginate.toString()})(${pageH});</script></body></html>`
+<script>window.addEventListener('load', () => (${paginate.toString()})(${pageH}));</script></body></html>`
         .replace(/app:\/\/[^/"')]+\//g, 'file:///');
 
-      const tmp = path.join(os.tmpdir(), 'obsidian-chrome-pdf.html');
       fs.writeFileSync(tmp, html, 'utf8');
-      await new Promise((resolve, reject) => execFile(browser, [
+      // 같은 이름의 PDF가 이미 있으면, 크롬이 실패해도 예전 파일 때문에 성공으로 보이지 않게 수정 시각을 비교한다
+      const mtime = () => (fs.existsSync(res.filePath) ? fs.statSync(res.filePath).mtimeMs : 0);
+      const before = mtime();
+      // 크롬은 PDF를 만들고도 오류 코드로 끝날 때가 있어 종료 코드 대신 파일이 새로 써졌는지로 판단한다
+      const err = await new Promise((resolve) => execFile(browser, [
         '--headless=new', '--disable-gpu', '--no-pdf-header-footer', '--allow-file-access-from-files',
         '--print-to-pdf=' + res.filePath, 'file:///' + tmp.split(path.sep).join('/'),
-      ], { timeout: 120000 }, (err) => (err && !fs.existsSync(res.filePath) ? reject(err) : resolve())));
-      fs.unlinkSync(tmp);
+      ], { timeout: 120000 }, resolve));
+      if (mtime() <= before) throw err || new Error('크롬이 PDF를 만들지 못했습니다.');
       new Notice('PDF 저장: ' + res.filePath);
       shell.openPath(res.filePath);
     } catch (e) {
@@ -205,6 +209,7 @@ html, body { background: white !important; margin: 0 !important; padding: 0 !imp
       new Notice('PDF 내보내기 실패: ' + e.message);
     } finally {
       notice.hide();
+      fs.rmSync(tmp, { force: true });
       comp.unload();
       host.remove();
     }
