@@ -42,7 +42,9 @@ function paginate(PAGE_H) {
     const lvl = h ? +h.tagName[1] : bold && bold.textContent.trim() === p.textContent.trim() ? 6 : 0;
     // 글자·그림이 없는 블록(줄 간격용 <br> 등)은 제목처럼 다음 내용에 붙인다
     const blank = !el.textContent.trim() && !el.querySelector('img, svg, video, iframe, canvas, table, hr, mjx-container');
-    blocks.push({ el, force, lvl, blank, callout: !!el.querySelector(':scope > .callout') });
+    // 다이어그램·그림만 있는 블록은 앞의 소개 문장과 같이 넘긴다
+    const figure = !!el.querySelector(':scope > .mermaid') || (!el.textContent.trim() && !!el.querySelector('img, svg'));
+    blocks.push({ el, force, lvl, blank, figure, callout: !!el.querySelector(':scope > .callout') });
     force = false;
   }
   // 스니펫 등의 페이지 넘김 규칙은 끄고, 여기서 정한 곳에서만 넘긴다
@@ -111,7 +113,7 @@ function paginate(PAGE_H) {
       return;
     }
     // 제목 블록은 바로 다음 블록과 한 덩어리로 다룬다
-    const units = split(chunk, (b) => !(b.prev && lead(b.prev) && chunk.includes(b.prev)));
+    const units = split(chunk, (b) => !(b.prev && (lead(b.prev) || b.figure) && chunk.includes(b.prev)));
     units.forEach((u) => {
       const uh = sum(u);
       if (uh <= H) { place(u, uh); used += adv(u); return; }
