@@ -1,4 +1,4 @@
-const { Plugin, MarkdownRenderer, MarkdownView, Component, Notice } = require('obsidian');
+const { Plugin, MarkdownRenderer, MarkdownView, Component, Notice, loadMermaid, loadMathJax } = require('obsidian');
 const { execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -36,7 +36,13 @@ function paginate(PAGE_H) {
       continue;
     }
     const h = el.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6');
-    blocks.push({ el, force, lvl: h ? +h.tagName[1] : 0, callout: !!el.querySelector(':scope > .callout') });
+    // 굵은 글씨만 있는 한 줄 문단(**⚠️ 헷갈리기 쉬운 것**)도 가장 작은 소제목으로 본다
+    const p = el.querySelector(':scope > p:only-child');
+    const bold = p && p.querySelector(':scope > strong:only-child');
+    const lvl = h ? +h.tagName[1] : bold && bold.textContent.trim() === p.textContent.trim() ? 6 : 0;
+    // 글자·그림이 없는 블록(줄 간격용 <br> 등)은 제목처럼 다음 내용에 붙인다
+    const blank = !el.textContent.trim() && !el.querySelector('img, svg, video, iframe, canvas, table, hr, mjx-container');
+    blocks.push({ el, force, lvl, blank, callout: !!el.querySelector(':scope > .callout') });
     force = false;
   }
   // 스니펫 등의 페이지 넘김 규칙은 끄고, 여기서 정한 곳에서만 넘긴다
@@ -88,6 +94,8 @@ function paginate(PAGE_H) {
   const place = (chunk, fit) => { if (used + fit > H) newPage(chunk[0]); };
 
   // 덩어리가 한 페이지에 들어가면 통째로 놓고, 아니면 다음 단계 소제목에서 나눠 다시 시도한다
+  // 제목과 빈 블록은 혼자 두지 않고 다음 블록과 같이 놓는다
+  const lead = (b) => b.lvl || b.blank;
   const LEVELS = [(b) => b.lvl === 3, (b) => b.lvl === 4, (b) => b.lvl >= 5 || b.callout];
   const layout = (chunk, d) => {
     const ch = sum(chunk);
@@ -96,14 +104,14 @@ function paginate(PAGE_H) {
       // 제목만 있는 덩어리(#### 바로 아래 ##### 등)는 다음 덩어리에 붙인다
       const parts = split(chunk, LEVELS[d]).reduce((out, c) => {
         const last = out[out.length - 1];
-        if (last && last.every((b) => b.lvl)) last.push(...c); else out.push(c);
+        if (last && last.every(lead)) last.push(...c); else out.push(c);
         return out;
       }, []);
       parts.forEach((c) => layout(c, d + 1));
       return;
     }
     // 제목 블록은 바로 다음 블록과 한 덩어리로 다룬다
-    const units = split(chunk, (b) => !(b.prev && b.prev.lvl && chunk.includes(b.prev)));
+    const units = split(chunk, (b) => !(b.prev && lead(b.prev) && chunk.includes(b.prev)));
     units.forEach((u) => {
       const uh = sum(u);
       if (uh <= H) { place(u, uh); used += adv(u); return; }
@@ -117,14 +125,19 @@ function paginate(PAGE_H) {
     });
   };
 
-  const sections = split(vis, (b) => b.lvl === 1 || b.lvl === 2);
+  // 제목만 있는 섹션(# 바로 아래 ##)은 다음 섹션에 붙인다
+  const sections = split(vis, (b) => b.lvl === 1 || b.lvl === 2).reduce((out, c) => {
+    const last = out[out.length - 1];
+    if (last && last.every(lead) && !c[0].force) last.push(...c); else out.push(c);
+    return out;
+  }, []);
   sections.forEach((sec, si) => {
     if (sec[0].force) newPage(sec[0]);
     const total = sum(sec);
-    // 내용 없이 제목만 있는 섹션(# 2주차 + 한 줄)은 다음 섹션 첫 부분과 같이 놓는다
+    // 내용이 거의 없는 섹션(# 2주차 + 한 줄)은 다음 섹션이 실제로 놓일 첫 덩어리와 같이 놓는다
     const next = sections[si + 1];
-    const tail = sec.length <= 2 && next && !next[0].force
-      ? adv(sec) - total + sum(split(next, (b) => b.lvl >= 3 || b.callout)[0]) : 0;
+    const nextFit = next && (sum(next) <= H ? sum(next) : sum(split(next, (b) => b.lvl >= 3 || b.callout)[0]));
+    const tail = sec.length <= 2 && next && !next[0].force ? adv(sec) - total + nextFit : 0;
     if (total <= H) { place(sec, Math.min(total + tail, H)); used += adv(sec); return; }
     layout(sec, 0);
   });
@@ -141,6 +154,35 @@ function collectCss(rules) {
     }
     return r.cssText;
   }).join('\n');
+}
+
+// 앱 내부 경로(url("/lib/mathjax/...woff2") 등)는 크롬이 file://로 열면 찾지 못해
+// 수식 글꼴이 빠지고 글자가 잘린다. 옵시디언 안에서 읽어 data: URL로 넣는다.
+async function inlineAppUrls(css) {
+  const re = /url\((["']?)(\/(?!\/)[^"')]+)\1\)/g;
+  const data = {};
+  for (const u of new Set(Array.from(css.matchAll(re), (m) => m[2]))) {
+    try {
+      const res = await fetch(u);
+      if (!res.ok) continue;
+      const type = res.headers.get('content-type') || 'application/octet-stream';
+      data[u] = `data:${type};base64,${Buffer.from(await res.arrayBuffer()).toString('base64')}`;
+    } catch (e) { /* 못 읽은 파일은 그대로 둔다 */ }
+  }
+  return css.replace(re, (m, q, u) => (data[u] ? `url("${data[u]}")` : m));
+}
+
+// 옵시디언이 그리지 못하고 코드로 남긴 mermaid 블록을 그림으로 바꾼다
+async function renderLeftoverMermaid(body, mermaid) {
+  const codes = Array.from(body.querySelectorAll('pre > code.language-mermaid'));
+  for (const [i, code] of codes.entries()) {
+    try {
+      const r = await mermaid.render('chrome-pdf-mermaid-' + i, code.textContent);
+      const div = createDiv('mermaid');
+      div.innerHTML = typeof r === 'string' ? r : r.svg;
+      code.parentElement.replaceWith(div);
+    } catch (e) { console.error('mermaid 렌더링 실패', e); }
+  }
 }
 
 module.exports = class ChromePdfExport extends Plugin {
@@ -175,9 +217,15 @@ module.exports = class ChromePdfExport extends Plugin {
       const view = host.createDiv('markdown-preview-view markdown-rendered');
       const settings = this.app.vault.getConfig('pdfExportSettings') || {};
       if (settings.includeName !== false) view.createEl('h1', { text: file.basename });
+      // 옵시디언을 막 켰을 때는 수식·다이어그램 라이브러리가 아직 없어 코드로 남으므로 먼저 불러온다
+      const [mermaid] = await Promise.all([loadMermaid(), loadMathJax()]);
       const body = createDiv();
       await MarkdownRenderer.render(this.app, await this.app.vault.cachedRead(file), body, file.path, comp);
       await sleep(1500); // 수식·다이어그램 렌더링 대기
+      // 다이어그램이 아직 코드 상태면 그림으로 바뀔 때까지 더 기다린다 (최대 15초)
+      for (let i = 0; i < 20 && body.querySelector('code.language-mermaid'); i++) await sleep(250);
+      // 그래도 코드로 남은 다이어그램은 직접 그린다
+      await renderLeftoverMermaid(body, mermaid);
       for (const el of Array.from(body.children)) {
         if (el.tagName === 'HR' || el.classList.contains('frontmatter') || el.classList.contains('frontmatter-container')) {
           if (el.tagName === 'HR') view.appendChild(el);
@@ -187,9 +235,9 @@ module.exports = class ChromePdfExport extends Plugin {
       }
       view.querySelectorAll('a.internal-link').forEach((a) => a.removeAttribute('href'));
 
-      const css = Array.from(document.styleSheets).map((s) => {
+      const css = await inlineAppUrls(Array.from(document.styleSheets).map((s) => {
         try { return collectCss(s.cssRules); } catch (e) { return ''; }
-      }).join('\n');
+      }).join('\n'));
       const bodyCls = document.body.className.replace('theme-dark', 'theme-light');
       const size = settings.pageSize in PAPER ? settings.pageSize : 'A4';
       let [w, h] = PAPER[size];
@@ -201,7 +249,7 @@ module.exports = class ChromePdfExport extends Plugin {
 html, body { background: white !important; margin: 0 !important; padding: 0 !important; overflow: visible !important; height: auto !important; }
 .print { width: ${w - 2 * MARGIN_MM}mm; }</style></head>
 <body class="${bodyCls}"><div class="print">${view.outerHTML}</div>
-<script>window.addEventListener('load', () => (${paginate.toString()})(${pageH}));</script></body></html>`
+<script>window.addEventListener('load', () => document.fonts.ready.then(() => (${paginate.toString()})(${pageH})));</script></body></html>`
         .replace(/app:\/\/[^/"')]+\//g, 'file:///');
 
       fs.writeFileSync(tmp, html, 'utf8');
@@ -210,7 +258,8 @@ html, body { background: white !important; margin: 0 !important; padding: 0 !imp
       const before = mtime();
       // 크롬은 PDF를 만들고도 오류 코드로 끝날 때가 있어 종료 코드 대신 파일이 새로 써졌는지로 판단한다
       const err = await new Promise((resolve) => execFile(browser, [
-        '--headless=new', '--disable-gpu', '--no-pdf-header-footer', '--allow-file-access-from-files',
+        // virtual-time-budget: 글꼴 로드를 기다리는 페이지 계산이 끝난 뒤에 출력하게 함
+        '--headless=new', '--disable-gpu', '--no-pdf-header-footer', '--allow-file-access-from-files', '--virtual-time-budget=10000',
         '--print-to-pdf=' + res.filePath, 'file:///' + tmp.split(path.sep).join('/'),
       ], { timeout: 120000 }, resolve));
       if (mtime() <= before) throw err || new Error('크롬이 PDF를 만들지 못했습니다.');
